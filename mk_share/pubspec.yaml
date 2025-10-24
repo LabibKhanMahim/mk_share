@@ -1,3 +1,5 @@
 - pipeline: mk_share
   refs:
   - :default
+  events:
+  - type: WEBHOOK
