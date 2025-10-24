@@ -47,7 +47,7 @@ dependencies:
   connectivity_plus: ^5.0.1
 
   # For getting device information
-  device_info_plus: ^8.1.0
+  device_info_plus: ^11.3.0 # <--- This version has been updated to avoid conflicts.
 
   # For using SVG images
   flutter_svg: ^2.0.5
