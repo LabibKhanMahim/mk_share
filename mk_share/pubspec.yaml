@@ -46,8 +46,11 @@ dependencies:
   # For checking network status
   connectivity_plus: ^5.0.1
 
-  # For getting device information
-  device_info_plus: ^11.3.0 # <--- This version has been updated to avoid conflicts.
+  # For getting device information (FIXED: Updated for file_picker compatibility)
+  device_info_plus: ^11.3.0
+
+  # ✅ ADDED: Required by network_utils.dart
+  network_info_plus: ^5.0.0
 
   # For using SVG images
   flutter_svg: ^2.0.5

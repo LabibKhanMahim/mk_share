@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:convert'; // FIXED: Added for jsonDecode
 import 'package:flutter/material.dart';
 import 'package:flutter_staggered_animations/flutter_staggered_animations.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
@@ -113,7 +114,7 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
       );
 
       if (response.statusCode == 200) {
-        final List<dynamic> filesJson = [];
+        final List<dynamic> filesJson = jsonDecode(response.body); // FIXED: Decoding JSON
         final List<RemoteFile> files = filesJson.map((json) {
           return RemoteFile(
             name: json['name'],
@@ -249,6 +250,9 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
                     children: [
                       Expanded(
                         child: TextField(
+                          onChanged: (value) { // FIXED: Moved onChanged inside TextField
+                            serverIP = value;
+                          },
                           style: const TextStyle(color: Colors.white),
                           decoration: InputDecoration(
                             hintText: 'Enter sender IP (e.g., 192.168.1.100)',
@@ -259,12 +263,10 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
                             enabledBorder: OutlineInputBorder(
                               borderSide: BorderSide(color: Colors.cyan.withOpacity(0.5)),
                             ),
-                            focusedBorder: const BorderSide(color: Colors.cyan),
+                            focusedBorder: OutlineInputBorder( // FIXED: Used OutlineInputBorder instead of BorderSide
+                              borderSide: const BorderSide(color: Colors.cyan),
                             ),
                           ),
-                          onChanged: (value) {
-                            serverIP = value;
-                          },
                         ),
                       ),
                       const SizedBox(width: 10),
