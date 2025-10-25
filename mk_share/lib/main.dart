@@ -1,38 +1,21 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'screens/splash_screen.dart';
+import 'package:flutter/foundation.dart';
 import 'screens/home_screen.dart';
-import 'utils/network_utils.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  
-  await SystemChrome.setPreferredOrientations([
-    DeviceOrientation.portraitUp,
-    DeviceOrientation.portraitDown,
-  ]);
-  
-  await _requestPermissions();
-  
-  SystemChrome.setSystemUIOverlayStyle(
-    const SystemUiOverlayStyle(
-      statusBarColor: Colors.transparent,
-      statusBarIconBrightness: Brightness.light,
-      systemNavigationBarColor: Colors.black,
-      systemNavigationBarIconBrightness: Brightness.light,
-    ),
-  );
-  
-  runApp(const MkShareApp());
-}
 
-Future<void> _requestPermissions() async {
+  // পারমিশন চাওয়া
   await [
     Permission.storage,
-    Permission.phone,
-    Permission.location,
+    Permission.accessMediaLocation,
+    Permission.manageExternalStorage,
   ].request();
+
+  if (kDebugMode) print('App started');
+
+  runApp(const MkShareApp());
 }
 
 class MkShareApp extends StatelessWidget {
@@ -45,18 +28,11 @@ class MkShareApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         brightness: Brightness.dark,
-        primaryColor: Colors.black,
-        scaffoldBackgroundColor: Colors.black,
-        fontFamily: 'RobotoMono',
-        textTheme: const TextTheme(
-          bodyLarge: TextStyle(color: Colors.white),
-          bodyMedium: TextStyle(color: Colors.white),
-        ),
+        primaryColor: const Color(0xFF00FF41), // নিয়ন গ্রিন
+        scaffoldBackgroundColor: const Color(0xFF0A0A0A), // কালো ব্যাকগ্রাউন্ড
+        useMaterial3: true,
       ),
-      home: const SplashScreen(),
-      routes: {
-        '/home': (context) => const HomeScreen(),
-      },
+      home: const HomeScreen(),
     );
   }
 }

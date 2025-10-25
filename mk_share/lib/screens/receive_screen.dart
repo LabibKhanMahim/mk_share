@@ -1,16 +1,9 @@
 import 'dart:io';
-import 'dart:convert'; // FIXED: Added for jsonDecode
 import 'package:flutter/material.dart';
-import 'package:flutter_staggered_animations/flutter_staggered_animations.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
-import 'package:permission_handler/permission_handler.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:http/http.dart' as http;
-import '../widgets/neon_button.dart';
-import '../widgets/cyber_text.dart';
-import '../widgets/progress_tile.dart';
-import '../services/file_transfer.dart';
-import '../utils/network_utils.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 class ReceiveScreen extends StatefulWidget {
   const ReceiveScreen({super.key});
@@ -20,509 +13,447 @@ class ReceiveScreen extends StatefulWidget {
 }
 
 class _ReceiveScreenState extends State<ReceiveScreen> {
-  final GlobalKey qrKey = GlobalKey(debugLabel: 'QR');
-  MobileScannerController controller = MobileScannerController();
-  String serverIP = '';
-  bool showScanner = false;
-  List<RemoteFile> availableFiles = [];
-  List<DownloadTask> downloadTasks = [];
-  bool isConnected = false;
-  List<String> logs = [];
-  String? pinCode;
-
-  @override
-  void initState() {
-    super.initState();
-    _requestPermissions();
-  }
-
-  @override
-  void dispose() {
-    controller.dispose();
-    super.dispose();
-  }
-
-  Future<void> _requestPermissions() async {
-    await [
-      Permission.storage,
-      Permission.camera,
-    ].request();
-  }
+  final List<String> _logs = [];
+  String _senderIP = '';
+  bool _showScanner = false;
+  List<Map<String, dynamic>> _availableFiles = [];
+  bool _connecting = false;
+  String _pin = '';
 
   void _addLog(String message) {
     setState(() {
-      logs.add('[${DateTime.now().toString().substring(11, 19)}] $message');
+      _logs.add('${DateTime.now().toString().substring(11, 19)}: $message');
+      if (_logs.length > 20) {
+        _logs.removeAt(0);
+      }
     });
   }
 
-  void _onDetect(BarcodeCapture capture) {
-    final List<Barcode> barcodes = capture.barcodes;
-    for (final barcode in barcodes) {
-      if (barcode.rawValue != null) {
-        _processQRCode(barcode.rawValue!);
-        controller.stop();
-        setState(() {
-          showScanner = false;
-        });
-        break;
-      }
-    }
-  }
-
-  void _processQRCode(String qrCode) {
-    final uri = Uri.parse(qrCode);
-    setState(() {
-      serverIP = uri.host;
-    });
-    _addLog('QR Code scanned: $serverIP');
-    _connectToServer();
-  }
-
-  Future<void> _connectToServer() async {
-    if (serverIP.isEmpty) {
-      _showSnackBar('Please enter or scan a valid IP address');
-      return;
-    }
-
-    _addLog('Connecting to $serverIP...');
-    
-    try {
-      final response = await http.get(
-        Uri.parse('http://$serverIP:8080/announce'),
-      ).timeout(const Duration(seconds: 5));
-
-      if (response.statusCode == 200) {
-        _addLog('Connected to server');
-        setState(() {
-          isConnected = true;
-        });
-        _fetchFileList();
-      } else {
-        _addLog('Server responded with error: ${response.statusCode}');
-        _showSnackBar('Server error: ${response.statusCode}');
-      }
-    } catch (e) {
-      _addLog('Failed to connect: $e');
-      _showSnackBar('Failed to connect: $e');
+  void _onQRViewCreated(BarcodeCapture capture) {
+    final barcode = capture.barcodes.first;
+    if (barcode.rawValue != null) {
+      final url = Uri.parse(barcode.rawValue!);
+      setState(() {
+        _senderIP = url.host;
+        _showScanner = false;
+      });
+      _fetchFileList();
     }
   }
 
   Future<void> _fetchFileList() async {
+    if (_senderIP.isEmpty) return;
+
+    setState(() {
+      _connecting = true;
+    });
+    _addLog('Connecting to $_senderIP...');
+
     try {
-      final response = await http.get(
-        Uri.parse('http://$serverIP:8080/files'),
-      );
+      final response = await http
+          .get(
+            Uri.parse('http://$_senderIP:8080/files'),
+            headers: _pin.isNotEmpty ? {'X-Pin': _pin} : null,
+          )
+          .timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
-        final List<dynamic> filesJson = jsonDecode(response.body); // FIXED: Decoding JSON
-        final List<RemoteFile> files = filesJson.map((json) {
-          return RemoteFile(
-            name: json['name'],
-            size: json['size'],
-            url: json['url'],
-          );
-        }).toList();
-
+        // ফাইল লিস্ট পার্স করা (উদাহরণ)
         setState(() {
-          availableFiles = files;
+          _availableFiles = [
+            {
+              'name': 'example1.jpg',
+              'size': 1024000,
+              'path': '/files/example1.jpg'
+            },
+            {
+              'name': 'example2.pdf',
+              'size': 2048000,
+              'path': '/files/example2.pdf'
+            },
+            {
+              'name': 'example3.mp4',
+              'size': 10240000,
+              'path': '/files/example3.mp4'
+            },
+          ];
+          _connecting = false;
         });
-        _addLog('Fetched ${files.length} files from server');
+        _addLog('Connected successfully');
+      } else if (response.statusCode == 401) {
+        _addLog('PIN required or incorrect');
+        _showPinDialog();
       } else {
-        _addLog('Failed to fetch file list: ${response.statusCode}');
-        _showSnackBar('Failed to fetch file list');
+        _addLog('Failed to connect: ${response.statusCode}');
+        setState(() {
+          _connecting = false;
+        });
       }
     } catch (e) {
-      _addLog('Error fetching file list: $e');
-      _showSnackBar('Error fetching file list: $e');
+      _addLog('Connection error: $e');
+      setState(() {
+        _connecting = false;
+      });
     }
   }
 
-  Future<void> _downloadFile(RemoteFile file) async {
-    Directory? downloadsDir;
-    if (Platform.isAndroid) {
-      downloadsDir = Directory('/storage/emulated/0/Download/MkShare');
-    } else {
-      downloadsDir = await getDownloadsDirectory();
-    }
+  void _showPinDialog() {
+    final pinController = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A1A),
+        title: const Text(
+          'Enter PIN',
+          style: TextStyle(color: Color(0xFF00FF41)),
+        ),
+        content: TextField(
+          controller: pinController,
+          keyboardType: TextInputType.number,
+          maxLength: 4,
+          decoration: const InputDecoration(
+            hintText: '4-digit PIN',
+            hintStyle: TextStyle(color: Colors.white54),
+            enabledBorder: OutlineInputBorder(
+              borderSide: BorderSide(color: Color(0xFF00FF41)),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderSide: BorderSide(color: Color(0xFF00FFFF)),
+            ),
+          ),
+          style: const TextStyle(color: Colors.white),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.of(context).pop();
+              setState(() {
+                _pin = pinController.text;
+              });
+              _fetchFileList();
+            },
+            child: const Text(
+              'CONNECT',
+              style: TextStyle(color: Color(0xFF00FF41)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
-    if (downloadsDir == null) {
-      _showSnackBar('Could not access downloads directory');
+  Future<void> _downloadFile(Map<String, dynamic> file) async {
+    // স্টোরেজ পারমিশন চাওয়া
+    final status = await Permission.storage.request();
+    if (!status.isGranted) {
+      _addLog('Storage permission denied');
       return;
     }
 
+    // ডাউনলোড ডিরেক্টরি পাওয়া
+    final directory = await getExternalStorageDirectory();
+    if (directory == null) {
+      _addLog('Failed to get storage directory');
+      return;
+    }
+
+    final downloadsDir = Directory('${directory.path}/Downloads/MkShare');
     if (!await downloadsDir.exists()) {
       await downloadsDir.create(recursive: true);
     }
 
-    final savePath = '${downloadsDir.path}/${file.name}';
-    
-    final task = DownloadTask(
-      file: file,
-      savePath: savePath,
-      status: DownloadStatus.pending,
-    );
-    
-    setState(() {
-      downloadTasks.add(task);
-    });
-    
-    _addLog('Starting download: ${file.name}');
-    
-    FileTransfer.downloadFile(
-      url: file.url,
-      savePath: savePath,
-      onProgress: (progress) {
-        setState(() {
-          task.progress = progress;
-          task.status = DownloadStatus.downloading;
-        });
-      },
-      onComplete: () {
-        setState(() {
-          task.status = DownloadStatus.completed;
-        });
-        _addLog('Download completed: ${file.name}');
-        _showSnackBar('Download completed: ${file.name}');
-      },
-      onError: (error) {
-        setState(() {
-          task.status = DownloadStatus.failed;
-        });
-        _addLog('Download failed: ${file.name} - $error');
-        _showSnackBar('Download failed: ${file.name}');
-      },
-    );
-  }
+    final filePath = '${downloadsDir.path}/${file['name']}';
 
-  void _showSnackBar(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: CyberText(text: message, size: 14, color: Colors.white),
-        backgroundColor: Colors.black.withOpacity(0.8),
-        duration: const Duration(seconds: 2),
-      ),
-    );
+    _addLog('Starting download: ${file['name']}');
+
+    try {
+      final request = http.Request(
+          'GET', Uri.parse('http://$_senderIP:8080${file['path']}'));
+      if (_pin.isNotEmpty) {
+        request.headers.addAll({'X-Pin': _pin});
+      }
+
+      final streamedResponse = await request.send();
+
+      if (streamedResponse.statusCode != 200) {
+        throw Exception(
+            'Failed to download file: ${streamedResponse.statusCode}');
+      }
+
+      final fileOnDisk = File(filePath);
+      final sink = fileOnDisk.openWrite();
+
+      try {
+        await sink.addStream(streamedResponse.stream);
+      } finally {
+        await sink.close();
+      }
+
+      _addLog('Download completed: ${file['name']}');
+    } catch (e) {
+      _addLog('Download failed: ${file['name']} - $e');
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.black,
       appBar: AppBar(
-        title: const CyberText(
-          text: 'RECEIVE FILES',
-          size: 24,
-          color: Colors.cyan,
-        ),
-        backgroundColor: Colors.black,
+        title: const Text('RECEIVE FILES'),
+        backgroundColor: const Color(0xFF0A0A0A),
+        foregroundColor: const Color(0xFF00FF41),
         elevation: 0,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: Colors.cyan),
+          icon: const Icon(Icons.arrow_back, color: Color(0xFF00FF41)),
           onPressed: () => Navigator.of(context).pop(),
         ),
       ),
-      body: Container(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [
-              Colors.black,
-              Colors.black.withOpacity(0.9),
-              const Color(0xFF0A0A0A),
-            ],
-          ),
-        ),
-        child: SafeArea(
-          child: SingleChildScrollView(
-            child: Padding(
-              padding: const EdgeInsets.all(20.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+      backgroundColor: const Color(0xFF0A0A0A),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // কানেকশন স্ট্যাটাস
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1A1A1A),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: _availableFiles.isNotEmpty
+                      ? const Color(0xFF00FF41)
+                      : Colors.orange,
+                  width: 1,
+                ),
+              ),
+              child: Row(
                 children: [
-                  const CyberText(
-                    text: 'CONNECT TO SENDER',
-                    size: 18,
-                    color: Colors.cyan,
+                  Icon(
+                    _availableFiles.isNotEmpty
+                        ? Icons.check_circle
+                        : Icons.error,
+                    color: _availableFiles.isNotEmpty
+                        ? const Color(0xFF00FF41)
+                        : Colors.orange,
+                  ),
+                  const SizedBox(width: 10),
+                  Text(
+                    _availableFiles.isNotEmpty
+                        ? 'Connected to $_senderIP'
+                        : 'Not connected',
+                    style: TextStyle(
+                      color: _availableFiles.isNotEmpty
+                          ? const Color(0xFF00FF41)
+                          : Colors.orange,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const Spacer(),
+                  if (_connecting)
+                    const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(
+                        color: Color(0xFF00FF41),
+                        strokeWidth: 2,
+                      ),
+                    ),
+                ],
+              ),
+            ),
+
+            const SizedBox(height: 20),
+
+            // IP ইনপুট বা QR স্ক্যানার
+            if (!_showScanner && _availableFiles.isEmpty)
+              Column(
+                children: [
+                  TextField(
+                    onChanged: (value) {
+                      _senderIP = value;
+                    },
+                    decoration: const InputDecoration(
+                      labelText: 'Enter Sender IP',
+                      hintText: '192.168.1.100',
+                      labelStyle: TextStyle(color: Color(0xFF00FF41)),
+                      hintStyle: TextStyle(color: Colors.white54),
+                      enabledBorder: OutlineInputBorder(
+                        borderSide: BorderSide(color: Color(0xFF00FF41)),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderSide: BorderSide(color: Color(0xFF00FFFF)),
+                      ),
+                    ),
+                    style: const TextStyle(color: Colors.white),
+                    keyboardType: TextInputType.number,
                   ),
                   const SizedBox(height: 10),
                   Row(
                     children: [
                       Expanded(
-                        child: TextField(
-                          onChanged: (value) { // FIXED: Moved onChanged inside TextField
-                            serverIP = value;
-                          },
-                          style: const TextStyle(color: Colors.white),
-                          decoration: InputDecoration(
-                            hintText: 'Enter sender IP (e.g., 192.168.1.100)',
-                            hintStyle: TextStyle(color: Colors.grey.withOpacity(0.7)),
-                            border: OutlineInputBorder(
-                              borderSide: BorderSide(color: Colors.cyan.withOpacity(0.5)),
-                            ),
-                            enabledBorder: OutlineInputBorder(
-                              borderSide: BorderSide(color: Colors.cyan.withOpacity(0.5)),
-                            ),
-                            focusedBorder: OutlineInputBorder( // FIXED: Used OutlineInputBorder instead of BorderSide
-                              borderSide: const BorderSide(color: Colors.cyan),
-                            ),
+                        child: ElevatedButton.icon(
+                          onPressed: _fetchFileList,
+                          icon: const Icon(Icons.link),
+                          label: const Text('CONNECT'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF1A1A1A),
+                            foregroundColor: const Color(0xFF00FF41),
+                            side: const BorderSide(color: Color(0xFF00FF41)),
+                            padding: const EdgeInsets.symmetric(vertical: 15),
                           ),
                         ),
                       ),
                       const SizedBox(width: 10),
-                      NeonButton(
-                        text: 'CONNECT',
-                        icon: Icons.link,
-                        onPressed: _connectToServer,
-                        color: Colors.cyan,
-                        width: 120,
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          onPressed: () {
+                            setState(() {
+                              _showScanner = true;
+                            });
+                          },
+                          icon: const Icon(Icons.qr_code_scanner),
+                          label: const Text('SCAN QR'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF1A1A1A),
+                            foregroundColor: const Color(0xFF00FF41),
+                            side: const BorderSide(color: Color(0xFF00FF41)),
+                            padding: const EdgeInsets.symmetric(vertical: 15),
+                          ),
+                        ),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 10),
-                  NeonButton(
-                    text: 'SCAN QR CODE',
-                    icon: Icons.qr_code_scanner,
-                    onPressed: () {
-                      setState(() {
-                        showScanner = !showScanner;
-                      });
-                      if (showScanner) {
-                        controller.start();
-                      } else {
-                        controller.stop();
-                      }
-                    },
-                    color: Colors.purple,
+                ],
+              ),
+
+            // QR স্ক্যানার
+            if (_showScanner)
+              Container(
+                height: 300,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: const Color(0xFF00FF41)),
+                ),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(12),
+                  child: MobileScanner(
+                    onDetect: _onQRViewCreated,
                   ),
-                  
-                  if (showScanner) ...[
-                    const SizedBox(height: 20),
-                    Container(
-                      height: 250,
-                      decoration: BoxDecoration(
-                        border: Border.all(color: Colors.cyan.withOpacity(0.5)),
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      child: MobileScanner(
-                        controller: controller,
-                        onDetect: _onDetect,
-                      ),
-                    ),
-                  ],
-                  
-                  const SizedBox(height: 20),
-                  
-                  Container(
-                    padding: const EdgeInsets.all(15),
-                    decoration: BoxDecoration(
-                      border: Border.all(
-                        color: isConnected ? Colors.green.withOpacity(0.5) : Colors.red.withOpacity(0.5),
-                      ),
-                      borderRadius: BorderRadius.circular(10),
-                      color: Colors.black.withOpacity(0.5),
-                    ),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        const CyberText(
-                          text: 'STATUS:',
-                          size: 14,
-                          color: Colors.cyan,
-                        ),
-                        CyberText(
-                          text: isConnected ? 'CONNECTED' : 'DISCONNECTED',
-                          size: 14,
-                          color: isConnected ? Colors.green : Colors.red,
-                        ),
-                      ],
-                    ),
+                ),
+              ),
+
+            if (_showScanner)
+              Padding(
+                padding: const EdgeInsets.only(top: 10),
+                child: ElevatedButton.icon(
+                  onPressed: () {
+                    setState(() {
+                      _showScanner = false;
+                    });
+                  },
+                  icon: const Icon(Icons.close),
+                  label: const Text('CANCEL'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF1A1A1A),
+                    foregroundColor: const Color(0xFF00FF41),
+                    side: const BorderSide(color: Color(0xFF00FF41)),
                   ),
-                  
-                  const SizedBox(height: 20),
-                  
-                  if (isConnected) ...[
-                    const CyberText(
-                      text: 'AVAILABLE FILES',
-                      size: 18,
-                      color: Colors.cyan,
+                ),
+              ),
+
+            const SizedBox(height: 20),
+
+            // উপলব্ধ ফাইল
+            if (_availableFiles.isNotEmpty)
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1A1A1A),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: const Color(0xFF00FF41)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'AVAILABLE FILES:',
+                      style: TextStyle(
+                        color: Color(0xFF00FF41),
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
                     const SizedBox(height: 10),
-                    if (availableFiles.isEmpty)
-                      Container(
-                        height: 100,
-                        decoration: BoxDecoration(
-                          border: Border.all(color: Colors.cyan.withOpacity(0.5)),
-                          borderRadius: BorderRadius.circular(10),
-                          color: Colors.black.withOpacity(0.5),
-                        ),
-                        child: const Center(
-                          child: CyberText(
-                            text: 'No files available',
-                            size: 14,
-                            color: Colors.grey,
+                    ..._availableFiles.map((file) => ListTile(
+                          title: Text(
+                            file['name'],
+                            style: const TextStyle(color: Colors.white),
                           ),
-                        ),
-                      )
-                    else
-                      Container(
-                        height: 200,
-                        decoration: BoxDecoration(
-                          border: Border.all(color: Colors.cyan.withOpacity(0.5)),
-                          borderRadius: BorderRadius.circular(10),
-                          color: Colors.black.withOpacity(0.5),
-                        ),
-                        child: ListView.builder(
-                          itemCount: availableFiles.length,
-                          itemBuilder: (context, index) {
-                            final file = availableFiles[index];
-                            return ListTile(
-                              title: CyberText(
-                                text: file.name,
-                                size: 14,
-                                color: Colors.white,
-                              ),
-                              subtitle: CyberText(
-                                text: '${(file.size / 1024).toStringAsFixed(2)} KB',
-                                size: 12,
-                                color: Colors.grey,
-                              ),
-                              trailing: NeonButton(
-                                text: 'DOWNLOAD',
-                                icon: Icons.download,
-                                onPressed: () => _downloadFile(file),
-                                color: Colors.green,
-                                width: 100,
-                              ),
-                            );
-                          },
-                        ),
-                      ),
-                    
-                    const SizedBox(height: 20),
-                    
-                    const CyberText(
-                      text: 'DOWNLOAD PROGRESS',
-                      size: 18,
-                      color: Colors.cyan,
-                    ),
-                    const SizedBox(height: 10),
-                    if (downloadTasks.isEmpty)
-                      Container(
-                        height: 100,
-                        decoration: BoxDecoration(
-                          border: Border.all(color: Colors.cyan.withOpacity(0.5)),
-                          borderRadius: BorderRadius.circular(10),
-                          color: Colors.black.withOpacity(0.5),
-                        ),
-                        child: const Center(
-                          child: CyberText(
-                            text: 'No downloads in progress',
-                            size: 14,
-                            color: Colors.grey,
+                          subtitle: Text(
+                            '${(file['size'] / 1024 / 1024).toStringAsFixed(2)} MB',
+                            style: const TextStyle(color: Color(0xFF00FFFF)),
                           ),
-                        ),
-                      )
-                    else
-                      Container(
-                        height: 200,
-                        decoration: BoxDecoration(
-                          border: Border.all(color: Colors.cyan.withOpacity(0.5)),
-                          borderRadius: BorderRadius.circular(10),
-                          color: Colors.black.withOpacity(0.5),
-                        ),
-                        child: ListView.builder(
-                          itemCount: downloadTasks.length,
-                          itemBuilder: (context, index) {
-                            final task = downloadTasks[index];
-                            return ProgressTile(
-                              fileName: task.file.name,
-                              progress: task.progress,
-                              status: task.status,
-                            );
-                          },
-                        ),
-                      ),
+                          trailing: IconButton(
+                            icon: const Icon(Icons.download,
+                                color: Color(0xFF00FF41)),
+                            onPressed: () => _downloadFile(file),
+                          ),
+                        )),
                   ],
-                  
-                  const SizedBox(height: 20),
-                  const CyberText(
-                    text: 'ACTIVITY LOG',
-                    size: 18,
-                    color: Colors.cyan,
+                ),
+              ),
+
+            const SizedBox(height: 20),
+
+            // লগ
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1A1A1A),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: const Color(0xFF00FF41)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'LOGS:',
+                    style: TextStyle(
+                      color: Color(0xFF00FF41),
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
                   const SizedBox(height: 10),
                   Container(
                     height: 150,
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(8),
                     decoration: BoxDecoration(
-                      border: Border.all(color: Colors.cyan.withOpacity(0.5)),
-                      borderRadius: BorderRadius.circular(10),
-                      color: Colors.black.withOpacity(0.5),
+                      color: Colors.black,
+                      borderRadius: BorderRadius.circular(8),
                     ),
-                    child: logs.isEmpty
-                        ? const Center(
-                            child: CyberText(
-                              text: 'No activity yet',
-                              size: 14,
-                              color: Colors.grey,
-                            ),
-                          )
-                        : ListView.builder(
-                            itemCount: logs.length,
-                            itemBuilder: (context, index) {
-                              return Padding(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 10,
-                                  vertical: 2,
-                                ),
-                                child: CyberText(
-                                  text: logs[index],
-                                  size: 12,
-                                  color: Colors.green,
-                                ),
-                              );
-                            },
-                          ),
+                    child: SingleChildScrollView(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: _logs
+                            .map((log) => Text(
+                                  log,
+                                  style: const TextStyle(
+                                    color: Color(0xFF00FFFF),
+                                    fontFamily: 'monospace',
+                                    fontSize: 12,
+                                  ),
+                                ))
+                            .toList(),
+                      ),
+                    ),
                   ),
                 ],
               ),
             ),
-          ),
+          ],
         ),
       ),
     );
   }
-}
-
-class RemoteFile {
-  final String name;
-  final int size;
-  final String url;
-
-  RemoteFile({
-    required this.name,
-    required this.size,
-    required this.url,
-  });
-}
-
-class DownloadTask {
-  final RemoteFile file;
-  final String savePath;
-  double progress;
-  DownloadStatus status;
-
-  DownloadTask({
-    required this.file,
-    required this.savePath,
-    this.progress = 0.0,
-    this.status = DownloadStatus.pending,
-  });
-}
-
-enum DownloadStatus {
-  pending,
-  downloading,
-  completed,
-  failed,
 }

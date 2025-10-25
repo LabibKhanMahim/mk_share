@@ -1,28 +1,68 @@
 import 'dart:io';
 import 'dart:convert';
-import 'dart:async';
+import 'package:shelf/shelf.dart';
+import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:file_picker/file_picker.dart';
 
 class LocalServer {
   HttpServer? _server;
   List<PlatformFile> _files = [];
-  String? _pinCode;
+  bool _usePin = false;
+  String _pin = '';
+  Function(String)? _onLog;
 
-  Future<void> start(List<PlatformFile> files, {String? pinCode}) async {
-    if (_server != null) {
-      throw Exception('Server is already running');
+  Future<void> start({
+    required int port,
+    required List<PlatformFile> files,
+    bool usePin = false,
+    String pin = '',
+    Function(String)? onLog,
+  }) async {
+    _files = files;
+    _usePin = usePin;
+    _pin = pin;
+    _onLog = onLog;
+
+    // হ্যান্ডলার ফাংশন তৈরি করুন
+    Handler handler = (Request request) {
+      // রুট পাথ পান
+      final path = request.url.path;
+
+      // রুট হ্যান্ডলিং
+      if (path == '/' || path.isEmpty) {
+        return _handleRoot(request);
+      } else if (path == '/files') {
+        return _handleFileList(request);
+      } else if (path.startsWith('/files/')) {
+        // ফাইল নাম এক্সট্র্যাক্ট করুন
+        final fileName = path.substring(7); // '/files/' এর পরের অংশ
+        return _handleFileDownload(request, fileName);
+      } else if (path == '/announce') {
+        return _handleAnnounce(request);
+      }
+
+      // 404 রিটার্ন করুন যদি কোনো রুট মেলে না
+      return Response.notFound('Endpoint not found');
+    };
+
+    // PIN যাচাইকরণ মিডলওয়্যার যোগ করুন যদি PIN সক্রিয় থাকে
+    if (_usePin) {
+      handler = _addPinValidationMiddleware(handler);
     }
 
-    _files = files;
-    _pinCode = pinCode;
+    // CORS হেডার যোগ করুন
+    handler = _addCorsHeadersMiddleware(handler);
 
     try {
-      _server = await HttpServer.bind('0.0.0.0', 8080);
-      await for (HttpRequest request in _server!) {
-        _handleRequest(request);
-      }
+      _server = await shelf_io.serve(
+        handler,
+        InternetAddress.anyIPv4,
+        port,
+      );
+      _onLog?.call('Server started on port $port');
     } catch (e) {
-      throw Exception('Failed to start server: $e');
+      _onLog?.call('Failed to start server: $e');
+      rethrow;
     }
   }
 
@@ -30,164 +70,129 @@ class LocalServer {
     if (_server != null) {
       await _server!.close();
       _server = null;
+      _onLog?.call('Server stopped');
     }
   }
 
-  void _handleRequest(HttpRequest request) {
-    final path = request.uri.path;
-    
-    request.response.headers.set('Access-Control-Allow-Origin', '*');
-    request.response.headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    request.response.headers.set('Access-Control-Allow-Headers', 'Content-Type');
-    
-    if (request.method == 'OPTIONS') {
-      request.response.statusCode = HttpStatus.ok;
-      request.response.close();
-      return;
-    }
-    
-    try {
-      switch (path) {
-        case '/announce':
-          _handleAnnounce(request);
-          break;
-        case '/files':
-          _handleFilesList(request);
-          break;
-        case '/verify':
-          _handlePinVerification(request);
-          break;
-        default:
-          if (path.startsWith('/download/')) {
-            _handleFileDownload(request, path.substring(10));
-          } else {
-            _send404(request);
-          }
-      }
-    } catch (e) {
-      _sendError(request, 'Internal server error: $e');
-    }
+  Response _handleRoot(Request request) {
+    return Response.ok(
+      '<html><body><h1>Mk Share Server</h1><p>Access <a href="/files">/files</a> to see available files</p></body></html>',
+      headers: {'content-type': 'text/html'},
+    );
   }
 
-  void _handleAnnounce(HttpRequest request) {
-    request.response.headers.contentType = ContentType.json;
-    request.response.write(jsonEncode({
-      'status': 'ok',
-      'message': 'Mk Share server is running',
-      'requiresPin': _pinCode != null,
-    }));
-    request.response.close();
+  Response _handleFileList(Request request) {
+    final fileList = _files
+        .map((file) => {
+              'name': file.name,
+              'size': file.size,
+              'path': '/files/${file.name}',
+            })
+        .toList();
+
+    return Response.ok(
+      jsonEncode(fileList),
+      headers: {'content-type': 'application/json'},
+    );
   }
 
-  Future<void> _handlePinVerification(HttpRequest request) async {
-    if (_pinCode == null) {
-      request.response.headers.contentType = ContentType.json;
-      request.response.write(jsonEncode({
-        'status': 'ok',
-        'verified': true,
-      }));
-      request.response.close();
-      return;
-    }
-    
-    try {
-      final body = await utf8.decoder.bind(request).join();
-      final data = jsonDecode(body);
-      final providedPin = data['pin'];
-      
-      request.response.headers.contentType = ContentType.json;
-      request.response.write(jsonEncode({
-        'status': 'ok',
-        'verified': providedPin == _pinCode,
-      }));
-      request.response.close();
-    } catch (e) {
-      _sendError(request, 'Invalid request body');
-    }
-  }
-
-  void _handleFilesList(HttpRequest request) {
-    final List<Map<String, dynamic>> filesList = [];
-    
-    for (final file in _files) {
-      filesList.add({
-        'name': file.name,
-        'size': file.size,
-        'url': '/download/${file.name}',
-      });
-    }
-    
-    request.response.headers.contentType = ContentType.json;
-    request.response.write(jsonEncode(filesList));
-    request.response.close();
-  }
-
-  void _handleFileDownload(HttpRequest request, String fileName) {
+  Future<Response> _handleFileDownload(Request request, String fileName) async {
     final file = _files.firstWhere(
       (f) => f.name == fileName,
       orElse: () => throw Exception('File not found'),
     );
-    
+
     if (file.path == null) {
-      _sendError(request, 'File path not available');
-      return;
+      return Response(404, body: 'File not found on device');
     }
-    
-    final fileToServe = File(file.path!);
-    
-    if (!fileToServe.existsSync()) {
-      _sendError(request, 'File does not exist');
-      return;
+
+    final fileOnDisk = File(file.path!);
+    if (!await fileOnDisk.exists()) {
+      return Response(404, body: 'File not found on device');
     }
-    
-    final extension = file.name?.split('.').last.toLowerCase();
-    String contentType = 'application/octet-stream';
-    
-    if (extension != null) {
-      switch (extension) {
-        case 'jpg':
-        case 'jpeg':
-          contentType = 'image/jpeg';
-          break;
-        case 'png':
-          contentType = 'image/png';
-          break;
-        case 'gif':
-          contentType = 'image/gif';
-          break;
-        case 'pdf':
-          contentType = 'application/pdf';
-          break;
-        case 'txt':
-          contentType = 'text/plain';
-          break;
-        case 'mp4':
-          contentType = 'video/mp4';
-          break;
-        case 'mp3':
-          contentType = 'audio/mpeg';
-          break;
+
+    final bytes = await fileOnDisk.readAsBytes();
+    final contentType = _getContentType(file.extension ?? '');
+
+    return Response.ok(
+      bytes,
+      headers: {
+        'content-type': contentType,
+        'content-disposition': 'attachment; filename="${file.name}"',
+      },
+    );
+  }
+
+  Response _handleAnnounce(Request request) {
+    return Response.ok(
+      jsonEncode({
+        'server': 'Mk Share',
+        'message': 'Use this endpoint to connect to the file server',
+        'filesEndpoint': '/files',
+      }),
+      headers: {'content-type': 'application/json'},
+    );
+  }
+
+  Handler _addPinValidationMiddleware(Handler handler) {
+    return (Request request) async {
+      // ঘোষণা এন্ডপয়েন্টের জন্য PIN যাচাইকরণ এড়িয়ে যান
+      if (request.url.path == 'announce') {
+        return await handler(request);
       }
+
+      final pin = request.headers['x-pin'];
+      if (pin != _pin) {
+        return Response(401, body: 'Unauthorized: Invalid or missing PIN');
+      }
+
+      return await handler(request);
+    };
+  }
+
+  Handler _addCorsHeadersMiddleware(Handler handler) {
+    return (Request request) async {
+      final response = await handler(request);
+
+      // রেসপন্সে CORS হেডার যোগ করুন
+      return response.change(headers: {
+        ...response.headers,
+        'access-control-allow-origin': '*',
+        'access-control-allow-methods': 'GET, POST, PUT, DELETE, OPTIONS',
+        'access-control-allow-headers': 'Content-Type, X-Pin',
+      });
+    };
+  }
+
+  String _getContentType(String extension) {
+    switch (extension.toLowerCase()) {
+      case 'jpg':
+      case 'jpeg':
+        return 'image/jpeg';
+      case 'png':
+        return 'image/png';
+      case 'gif':
+        return 'image/gif';
+      case 'pdf':
+        return 'application/pdf';
+      case 'txt':
+        return 'text/plain';
+      case 'html':
+        return 'text/html';
+      case 'css':
+        return 'text/css';
+      case 'js':
+        return 'application/javascript';
+      case 'json':
+        return 'application/json';
+      case 'zip':
+        return 'application/zip';
+      case 'mp4':
+        return 'video/mp4';
+      case 'mp3':
+        return 'audio/mpeg';
+      default:
+        return 'application/octet-stream';
     }
-    
-    request.response.headers.contentType = ContentType.parse(contentType);
-    request.response.headers.set('Content-Disposition', 'attachment; filename="${file.name}"');
-    request.response.headers.set('Content-Length', file.size.toString());
-    
-    fileToServe.openRead().pipe(request.response).catchError((e) {
-      request.response.close();
-    });
-  }
-
-  void _send404(HttpRequest request) {
-    request.response.statusCode = HttpStatus.notFound;
-    request.response.write('Not Found');
-    request.response.close();
-  }
-
-  void _sendError(HttpRequest request, String message) {
-    request.response.statusCode = HttpStatus.internalServerError;
-    request.response.write(message);
-    request.response.close();
   }
 }

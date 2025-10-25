@@ -1,76 +1,91 @@
 import 'package:flutter/material.dart';
-import 'cyber_text.dart';
-import '../screens/receive_screen.dart';
+import '../utils/theme.dart';
 
 class ProgressTile extends StatelessWidget {
   final String fileName;
+  final int fileSize;
   final double progress;
-  final DownloadStatus status;
+  final String status;
 
   const ProgressTile({
     super.key,
     required this.fileName,
+    required this.fileSize,
     required this.progress,
     required this.status,
   });
 
   @override
   Widget build(BuildContext context) {
-    Color statusColor;
-    String statusText;
-    
-    switch (status) {
-      case DownloadStatus.pending:
-        statusColor = Colors.yellow;
-        statusText = 'PENDING';
-        break;
-      case DownloadStatus.downloading:
-        statusColor = Colors.blue;
-        statusText = 'DOWNLOADING';
-        break;
-      case DownloadStatus.completed:
-        statusColor = Colors.green;
-        statusText = 'COMPLETED';
-        break;
-      case DownloadStatus.failed:
-        statusColor = Colors.red;
-        statusText = 'FAILED';
-        break;
-    }
-    
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppTheme.surfaceColor,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: AppTheme.primaryColor.withValues(alpha: 0.3)),
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               Expanded(
-                child: CyberText(
-                  text: fileName,
-                  size: 14,
-                  color: Colors.white,
+                child: Text(
+                  fileName,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                  ),
+                  overflow: TextOverflow.ellipsis,
                 ),
               ),
-              CyberText(
-                text: statusText,
-                size: 12,
-                color: statusColor,
+              Text(
+                '${(fileSize / 1024 / 1024).toStringAsFixed(2)} MB',
+                style: const TextStyle(
+                  color: AppTheme.secondaryColor,
+                  fontSize: 12,
+                ),
               ),
             ],
           ),
-          const SizedBox(height: 5),
-          LinearProgressIndicator(
-            value: progress,
-            backgroundColor: Colors.black,
-            valueColor: AlwaysStoppedAnimation<Color>(statusColor),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: LinearProgressIndicator(
+                  value: progress,
+                  backgroundColor: Colors.black.withValues(alpha: 0.3),
+                  valueColor: AlwaysStoppedAnimation<Color>(
+                    status == 'Completed'
+                        ? AppTheme.primaryColor
+                        : status.contains('Failed')
+                            ? AppTheme.errorColor
+                            : AppTheme.secondaryColor,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Text(
+                '${(progress * 100).toInt()}%',
+                style: const TextStyle(
+                  color: AppTheme.primaryColor,
+                  fontSize: 12,
+                ),
+              ),
+            ],
           ),
-          const SizedBox(height: 5),
-          CyberText(
-            text: '${(progress * 100).toStringAsFixed(1)}%',
-            size: 12,
-            color: Colors.grey,
+          const SizedBox(height: 4),
+          Text(
+            status,
+            style: TextStyle(
+              color: status == 'Completed'
+                  ? AppTheme.primaryColor
+                  : status.contains('Failed')
+                      ? AppTheme.errorColor
+                      : AppTheme.secondaryColor,
+              fontSize: 12,
+            ),
           ),
         ],
       ),

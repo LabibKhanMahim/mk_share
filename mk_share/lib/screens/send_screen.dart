@@ -1,13 +1,9 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:flutter_staggered_animations/flutter_staggered_animations.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+import 'package:network_info_plus/network_info_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
-import '../widgets/neon_button.dart';
-import '../widgets/cyber_text.dart';
 import '../services/local_server.dart';
-import '../utils/network_utils.dart';
 
 class SendScreen extends StatefulWidget {
   const SendScreen({super.key});
@@ -17,15 +13,13 @@ class SendScreen extends StatefulWidget {
 }
 
 class _SendScreenState extends State<SendScreen> {
-  List<PlatformFile> selectedFiles = [];
-  bool isServerRunning = false;
-  String serverIP = 'Getting IP...';
-  String serverURL = '';
-  bool showQR = false;
+  String _deviceIP = 'Getting IP...';
+  List<PlatformFile> _selectedFiles = [];
+  bool _serverRunning = false;
+  bool _usePin = false;
+  String _pin = '0000';
   final LocalServer _localServer = LocalServer();
-  List<String> logs = [];
-  bool usePin = false;
-  String pinCode = '';
+  final List<String> _logs = [];
 
   @override
   void initState() {
@@ -36,400 +30,388 @@ class _SendScreenState extends State<SendScreen> {
 
   @override
   void dispose() {
-    if (isServerRunning) {
-      _localServer.stop();
-    }
+    _localServer.stop();
     super.dispose();
   }
 
   Future<void> _getDeviceIP() async {
-    String ip = await NetworkUtils.getLocalIP();
-    setState(() {
-      serverIP = ip;
-      serverURL = 'http://$ip:8080';
-    });
+    final info = NetworkInfo();
+    final wifiIP = await info.getWifiIP();
+    if (wifiIP != null) {
+      setState(() {
+        _deviceIP = wifiIP;
+      });
+    }
   }
 
   void _generatePin() {
+    final random = DateTime.now().millisecondsSinceEpoch % 10000;
     setState(() {
-      pinCode = (1000 + (DateTime.now().millisecondsSinceEpoch % 9000)).toString();
+      _pin = random.toString().padLeft(4, '0');
     });
   }
 
   Future<void> _pickFiles() async {
-    FilePickerResult? result = await FilePicker.platform.pickFiles(
-      allowMultiple: true,
-    );
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        allowMultiple: true,
+        type: FileType.any,
+      );
 
-    if (result != null) {
+      if (result != null) {
+        setState(() {
+          _selectedFiles = result.files;
+        });
+        _addLog('Selected ${_selectedFiles.length} file(s)');
+      }
+    } catch (e) {
+      _addLog('Error picking files: $e');
+    }
+  }
+
+  Future<void> _toggleServer() async {
+    if (_serverRunning) {
+      await _localServer.stop();
       setState(() {
-        selectedFiles = result.files;
+        _serverRunning = false;
       });
-      _addLog('Selected ${selectedFiles.length} file(s)');
+      _addLog('Server stopped');
+    } else {
+      if (_selectedFiles.isEmpty) {
+        _addLog('Please select files first');
+        return;
+      }
+
+      // Storage permission
+      final status = await Permission.storage.request();
+      if (!status.isGranted) {
+        _addLog('Storage permission denied');
+        return;
+      }
+
+      try {
+        await _localServer.start(
+          port: 8080,
+          files: _selectedFiles,
+          usePin: _usePin,
+          pin: _pin,
+          onLog: (message) => _addLog(message),
+        );
+
+        setState(() {
+          _serverRunning = true;
+        });
+        _addLog('Server started on http://$_deviceIP:8080');
+      } catch (e) {
+        _addLog('Failed to start server: $e');
+      }
     }
   }
 
   void _addLog(String message) {
     setState(() {
-      logs.insert(0, '[${DateTime.now().toString().substring(11, 19)}] $message');
-      if (logs.length > 100) {
-        logs = logs.take(100).toList();
+      _logs.add('${DateTime.now().toString().substring(11, 19)}: $message');
+      if (_logs.length > 20) {
+        _logs.removeAt(0);
       }
     });
-  }
-
-  Future<void> _startServer() async {
-    if (selectedFiles.isEmpty) {
-      _showSnackBar('Please select files first');
-      return;
-    }
-
-    if (isServerRunning) {
-      _showSnackBar('Server is already running');
-      return;
-    }
-
-    if (Platform.isAndroid) {
-      var status = await Permission.storage.status;
-      if (!status.isGranted) {
-        await Permission.storage.request();
-      }
-    }
-
-    try {
-      _addLog('Starting server...');
-      await _localServer.start(selectedFiles, pinCode: usePin ? pinCode : null);
-      setState(() {
-        isServerRunning = true;
-      });
-      _addLog('Server started at $serverURL');
-      _showSnackBar('Server started successfully');
-    } catch (e) {
-      _addLog('Failed to start server: $e');
-      _showSnackBar('Failed to start server: $e');
-    }
-  }
-
-  Future<void> _stopServer() async {
-    try {
-      _addLog('Stopping server...');
-      await _localServer.stop();
-      setState(() {
-        isServerRunning = false;
-      });
-      _addLog('Server stopped');
-      _showSnackBar('Server stopped');
-    } catch (e) {
-      _addLog('Failed to stop server: $e');
-      _showSnackBar('Failed to stop server: $e');
-    }
-  }
-
-  void _removeFile(int index) {
-    final fileName = selectedFiles[index].name;
-    setState(() {
-      selectedFiles.removeAt(index);
-    });
-    _addLog('Removed file: $fileName');
-  }
-
-  void _showSnackBar(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: CyberText(text: message, size: 14, color: Colors.white),
-        backgroundColor: Colors.black.withOpacity(0.8),
-        duration: const Duration(seconds: 2),
-      ),
-    );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.black,
       appBar: AppBar(
-        title: const CyberText(
-          text: 'SEND FILES',
-          size: 24,
-          color: Colors.cyan,
-        ),
-        backgroundColor: Colors.black,
+        title: const Text('SEND FILES'),
+        backgroundColor: const Color(0xFF0A0A0A),
+        foregroundColor: const Color(0xFF00FF41),
         elevation: 0,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: Colors.cyan),
+          icon: const Icon(Icons.arrow_back, color: Color(0xFF00FF41)),
           onPressed: () => Navigator.of(context).pop(),
         ),
       ),
-      body: Container(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [
-              Colors.black,
-              Colors.black.withOpacity(0.9),
-              const Color(0xFF0A0A0A),
-            ],
-          ),
-        ),
-        child: SafeArea(
-          child: SingleChildScrollView(
-            child: Padding(
-              padding: const EdgeInsets.all(20.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+      backgroundColor: const Color(0xFF0A0A0A),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Server Status
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1A1A1A),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color:
+                      _serverRunning ? const Color(0xFF00FF41) : Colors.orange,
+                  width: 1,
+                ),
+              ),
+              child: Row(
                 children: [
-                  const CyberText(
-                    text: 'SELECT FILES',
-                    size: 18,
-                    color: Colors.cyan,
+                  Icon(
+                    _serverRunning ? Icons.check_circle : Icons.error,
+                    color: _serverRunning
+                        ? const Color(0xFF00FF41)
+                        : Colors.orange,
                   ),
-                  const SizedBox(height: 10),
-                  NeonButton(
-                    text: 'PICK FILES',
-                    icon: Icons.folder_open,
-                    onPressed: _pickFiles,
-                    color: Colors.cyan,
+                  const SizedBox(width: 10),
+                  Text(
+                    _serverRunning ? 'Server Running' : 'Server Stopped',
+                    style: TextStyle(
+                      color: _serverRunning
+                          ? const Color(0xFF00FF41)
+                          : Colors.orange,
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
-                  const SizedBox(height: 20),
-                  
-                  if (selectedFiles.isNotEmpty) ...[
-                    const CyberText(
-                      text: 'SELECTED FILES',
-                      size: 16,
-                      color: Colors.cyan,
+                  const Spacer(),
+                  Text(
+                    'http://$_deviceIP:8080',
+                    style: const TextStyle(
+                      color: Color(0xFF00FFFF),
+                      fontFamily: 'monospace',
+                      fontSize: 12,
                     ),
-                    const SizedBox(height: 10),
-                    Container(
-                      height: 200,
-                      decoration: BoxDecoration(
-                        border: Border.all(color: Colors.cyan.withOpacity(0.5)),
-                        borderRadius: BorderRadius.circular(10),
-                        color: Colors.black.withOpacity(0.5),
-                      ),
-                      child: ListView.builder(
-                        itemCount: selectedFiles.length,
-                        itemBuilder: (context, index) {
-                          final file = selectedFiles[index];
-                          return ListTile(
-                            title: CyberText(
-                              text: file.name,
-                              size: 14,
-                              color: Colors.white,
-                            ),
-                            subtitle: CyberText(
-                              text: '${(file.size ?? 0) / 1024} KB',
-                              size: 12,
-                              color: Colors.grey,
-                            ),
-                            trailing: IconButton(
-                              icon: const Icon(Icons.remove_circle, color: Colors.red),
-                              onPressed: () => _removeFile(index),
-                            ),
-                          );
-                        },
-                      ),
-                    ),
-                    const SizedBox(height: 20),
-                  ],
-                  
-                  const CyberText(
-                    text: 'SERVER CONTROLS',
-                    size: 18,
-                    color: Colors.cyan,
-                  ),
-                  const SizedBox(height: 10),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: NeonButton(
-                          text: isServerRunning ? 'STOP SERVER' : 'START SERVER',
-                          icon: isServerRunning ? Icons.stop : Icons.play_arrow,
-                          onPressed: isServerRunning ? _stopServer : _startServer,
-                          color: isServerRunning ? Colors.red : Colors.green,
-                        ),
-                      ),
-                      const SizedBox(width: 10),
-                      NeonButton(
-                        text: usePin ? 'PIN ON' : 'PIN OFF',
-                        icon: Icons.lock,
-                        onPressed: () {
-                          setState(() {
-                            usePin = !usePin;
-                          });
-                        },
-                        color: usePin ? Colors.green : Colors.grey,
-                        width: 100,
-                      ),
-                    ],
-                  ),
-                  
-                  if (usePin) ...[
-                    const SizedBox(height: 10),
-                    Container(
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        border: Border.all(color: Colors.green.withOpacity(0.5)),
-                        borderRadius: BorderRadius.circular(10),
-                        color: Colors.black.withOpacity(0.5),
-                      ),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          const CyberText(
-                            text: 'PIN CODE:',
-                            size: 14,
-                            color: Colors.green,
-                          ),
-                          CyberText(
-                            text: pinCode,
-                            size: 16,
-                            color: Colors.white,
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                  
-                  const SizedBox(height: 20),
-                  
-                  if (isServerRunning) ...[
-                    const CyberText(
-                      text: 'SERVER INFO',
-                      size: 18,
-                      color: Colors.cyan,
-                    ),
-                    const SizedBox(height: 10),
-                    Container(
-                      padding: const EdgeInsets.all(15),
-                      decoration: BoxDecoration(
-                        border: Border.all(color: Colors.cyan.withOpacity(0.5)),
-                        borderRadius: BorderRadius.circular(10),
-                        color: Colors.black.withOpacity(0.5),
-                      ),
-                      child: Column(
-                        children: [
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              const CyberText(
-                                text: 'IP ADDRESS:',
-                                size: 14,
-                                color: Colors.cyan,
-                              ),
-                              CyberText(
-                                text: serverIP,
-                                size: 14,
-                                color: Colors.white,
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 10),
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              const CyberText(
-                                text: 'STATUS:',
-                                size: 14,
-                                color: Colors.cyan,
-                              ),
-                              const CyberText(
-                                text: 'RUNNING',
-                                size: 14,
-                                color: Colors.green,
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 20),
-                    
-                    NeonButton(
-                      text: showQR ? 'HIDE QR' : 'SHOW QR',
-                      icon: showQR ? Icons.qr_code_2_outlined : Icons.qr_code_2,
-                      onPressed: () {
-                        setState(() {
-                          showQR = !showQR;
-                        });
-                      },
-                      color: Colors.purple,
-                    ),
-                    
-                    if (showQR) ...[
-                      const SizedBox(height: 20),
-                      Center(
-                        child: Container(
-                          padding: const EdgeInsets.all(15),
-                          decoration: BoxDecoration(
-                            border: Border.all(color: Colors.cyan.withOpacity(0.5)),
-                            borderRadius: BorderRadius.circular(10),
-                            color: Colors.black.withOpacity(0.5),
-                          ),
-                          child: Column(
-                            children: [
-                              const CyberText(
-                                text: 'SCAN QR TO CONNECT',
-                                size: 14,
-                                color: Colors.cyan,
-                              ),
-                              const SizedBox(height: 10),
-                              QrImageView(
-                                data: serverURL,
-                                version: QrVersions.auto,
-                                size: 200.0,
-                                backgroundColor: Colors.white,
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ],
-                  ],
-                  
-                  const SizedBox(height: 20),
-                  const CyberText(
-                    text: 'ACTIVITY LOG',
-                    size: 18,
-                    color: Colors.cyan,
-                  ),
-                  const SizedBox(height: 10),
-                  Container(
-                    height: 150,
-                    decoration: BoxDecoration(
-                      border: Border.all(color: Colors.cyan.withOpacity(0.5)),
-                      borderRadius: BorderRadius.circular(10),
-                      color: Colors.black.withOpacity(0.5),
-                    ),
-                    child: logs.isEmpty
-                        ? const Center(
-                            child: CyberText(
-                              text: 'No activity yet',
-                              size: 14,
-                              color: Colors.grey,
-                            ),
-                          )
-                        : ListView.builder(
-                            itemCount: logs.length,
-                            itemBuilder: (context, index) {
-                              return Padding(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 10,
-                                  vertical: 2,
-                                ),
-                                child: CyberText(
-                                  text: logs[index],
-                                  size: 12,
-                                  color: Colors.green,
-                                ),
-                              );
-                            },
-                          ),
                   ),
                 ],
               ),
             ),
-          ),
+
+            const SizedBox(height: 20),
+
+            // QR Code
+            if (_serverRunning)
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Column(
+                  children: [
+                    const Text(
+                      'SCAN TO CONNECT',
+                      style: TextStyle(
+                        color: Color(0xFF00FF41),
+                        fontWeight: FontWeight.bold,
+                        fontFamily: 'monospace',
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    QrImageView(
+                      data: 'http://$_deviceIP:8080',
+                      version: QrVersions.auto,
+                      size: 200.0,
+                      backgroundColor: Colors.white,
+                    ),
+                    if (_usePin)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 10),
+                        child: Text(
+                          'PIN: $_pin',
+                          style: const TextStyle(
+                            color: Color(0xFF00FF41),
+                            fontWeight: FontWeight.bold,
+                            fontFamily: 'monospace',
+                            fontSize: 18,
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+
+            const SizedBox(height: 20),
+
+            // PIN toggle
+            Row(
+              children: [
+                const Text(
+                  'Use PIN for security:',
+                  style: TextStyle(color: Color(0xFF00FF41)),
+                ),
+                const Spacer(),
+                Switch(
+                  value: _usePin,
+                  onChanged: (value) {
+                    setState(() {
+                      _usePin = value;
+                    });
+                  },
+                  activeColor: const Color(0xFF00FF41),
+                ),
+              ],
+            ),
+
+            if (_usePin)
+              Padding(
+                padding: const EdgeInsets.only(top: 10),
+                child: Row(
+                  children: [
+                    const Text(
+                      'PIN:',
+                      style: TextStyle(color: Color(0xFF00FF41)),
+                    ),
+                    const SizedBox(width: 10),
+                    Text(
+                      _pin,
+                      style: const TextStyle(
+                        color: Color(0xFF00FFFF),
+                        fontWeight: FontWeight.bold,
+                        fontFamily: 'monospace',
+                        fontSize: 18,
+                      ),
+                    ),
+                    const Spacer(),
+                    IconButton(
+                      icon: const Icon(Icons.refresh, color: Color(0xFF00FF41)),
+                      onPressed: _generatePin,
+                    ),
+                  ],
+                ),
+              ),
+
+            const SizedBox(height: 20),
+
+            // File selection buttons
+            Row(
+              children: [
+                Expanded(
+                  child: ElevatedButton.icon(
+                    onPressed: _pickFiles,
+                    icon: const Icon(Icons.folder_open),
+                    label: const Text('SELECT FILES'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF1A1A1A),
+                      foregroundColor: const Color(0xFF00FF41),
+                      side: const BorderSide(color: Color(0xFF00FF41)),
+                      padding: const EdgeInsets.symmetric(vertical: 15),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: ElevatedButton.icon(
+                    onPressed: _toggleServer,
+                    icon: Icon(_serverRunning ? Icons.stop : Icons.play_arrow),
+                    label:
+                        Text(_serverRunning ? 'STOP SERVER' : 'START SERVER'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF1A1A1A),
+                      foregroundColor: const Color(0xFF00FF41),
+                      side: const BorderSide(color: Color(0xFF00FF41)),
+                      padding: const EdgeInsets.symmetric(vertical: 15),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+
+            const SizedBox(height: 20),
+
+            // Selected files list
+            if (_selectedFiles.isNotEmpty)
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1A1A1A),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: const Color(0xFF00FF41)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'SELECTED FILES:',
+                      style: TextStyle(
+                        color: Color(0xFF00FF41),
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    ..._selectedFiles.map(
+                      (file) => Padding(
+                        padding: const EdgeInsets.only(bottom: 5),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.insert_drive_file,
+                                color: Color(0xFF00FFFF), size: 16),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                file.name,
+                                style: const TextStyle(color: Colors.white),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            Text(
+                              '${((file.size ?? 0) / 1024 / 1024).toStringAsFixed(2)} MB', // ✅ fixed
+                              style: const TextStyle(
+                                color: Color(0xFF00FFFF),
+                                fontSize: 12,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+            const SizedBox(height: 20),
+
+            // Logs
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1A1A1A),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: const Color(0xFF00FF41)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'LOGS:',
+                    style: TextStyle(
+                      color: Color(0xFF00FF41),
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Container(
+                    height: 150,
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.black,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: SingleChildScrollView(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: _logs
+                            .map(
+                              (log) => Text(
+                                log,
+                                style: const TextStyle(
+                                  color: Color(0xFF00FFFF),
+                                  fontFamily: 'monospace',
+                                  fontSize: 12,
+                                ),
+                              ),
+                            )
+                            .toList(),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
       ),
     );
