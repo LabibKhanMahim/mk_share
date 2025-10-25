@@ -59,7 +59,7 @@ class AppTheme {
         fontFamily: 'Courier',
       ),
     ),
-    cardTheme: CardTheme(
+    cardTheme: CardThemeData(
       color: surfaceColor,
       elevation: 4,
       shape: RoundedRectangleBorder(
